@@ -66,8 +66,12 @@ EXACTLY-ONCE.
 
 ## Roadmap
 
-- v0.2: hash-chained receipts (Valley ledger pattern) — tamper-evident chain,
-  verified by checking the latest root
+- v0.2 (SHIPPED): hash-chained receipts (Valley ledger pattern). Each receipt
+  stores `prev_hash` and `receipt_hash = sha256(seq + proposal + request +
+  client_sig + from_v + to_v + result + prev_hash)`, computed inside the same
+  `BEGIN IMMEDIATE` transaction (~0.1ms). `GET /verify` walks the chain and
+  reports the tamper point: your local SQLite file is now a verifiable
+  append-only ledger. Test: forge any receipt field, chain breaks at that link.
 - v0.3: MCP router wrapper (`propose_transition`, `get_pending_proposals`,
   `get_receipt`) for Mac Mini MCP Router
 - Multi-device render adapters (terminal TUI, web canvas, iMessage signed link)

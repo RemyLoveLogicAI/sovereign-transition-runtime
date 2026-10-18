@@ -149,6 +149,29 @@ def main():
         check("out-of-scope field execution blocked -> ERR_FIELD_OUT_OF_SCOPE",
               code == 403 and r["error"] == "ERR_FIELD_OUT_OF_SCOPE", str(r))
 
+        # 11. Hash-chained receipts: second transition, chain verifies
+        _, _ = http("POST", "/seed", {"tasks": [{"task_id": "BOOT_MINI", "status": "off"}]})
+        code, prop3 = http("POST", "/proposals",
+                            {"task_id": "BOOT_MINI", "action": "BOOT_MINI",
+                             "diff": {"set": {"status": "on"}}})
+        rid11 = uuid.uuid4().hex
+        code, r = http("POST", "/approve",
+                       {"proposal_id": prop3["proposal_id"], "expected_version": 43,
+                        "action": "BOOT_MINI", "request_id": rid11,
+                        "client_signature": client_signature(prop3["proposal_id"], 43, "BOOT_MINI", rid11)})
+        check("second transition executes -> v44 receipt", code == 200 and r["receipt"]["new_version"] == 44, str(r))
+        code, v = http("GET", "/verify")
+        check("ledger chain verifies (2 links, tamper-free)",
+              code == 200 and v["ok"] and v["receipts"] == 2 and v["root"], str(v))
+
+        # 12. Tamper detection: forge a receipt field, chain must break at that link
+        tc = sqlite3.connect(DB)
+        tc.execute("UPDATE receipts SET result=? WHERE ledger_seq=1", (json.dumps({"forged": True}),))
+        tc.commit(); tc.close()
+        code, v = http("GET", "/verify")
+        check("tampered receipt detected -> chain broken at seq 1",
+              code == 200 and not v["ok"] and v["broken_at_seq"] == 1, str(v))
+
         print("\n" + "=" * 58)
         print(f"PASSED {len(PASS)}   FAILED {len(FAIL)}")
         for n, d in FAIL: print(f"  FAILED: {n} -> {d}")

@@ -48,9 +48,33 @@ def init():
     CREATE TABLE IF NOT EXISTS receipts (
       ledger_seq INTEGER PRIMARY KEY AUTOINCREMENT,
       proposal_id TEXT NOT NULL, request_id TEXT UNIQUE NOT NULL,
-      new_version INTEGER NOT NULL, result TEXT NOT NULL, executed_at REAL NOT NULL);
+      client_sig TEXT NOT NULL, from_version INTEGER NOT NULL,
+      new_version INTEGER NOT NULL, result TEXT NOT NULL, executed_at REAL NOT NULL,
+      prev_hash TEXT NOT NULL, receipt_hash TEXT NOT NULL);
     """)
     c.close()
+
+GENESIS = "0" * 64
+
+def receipt_hash(seq, pid, rid, sig, from_v, to_v, result, prev):
+    body = canon({"seq": seq, "proposal_id": pid, "request_id": rid,
+                  "client_sig": sig, "from_version": from_v, "to_version": to_v,
+                  "result": result, "prev_hash": prev})
+    return hashlib.sha256(body.encode()).hexdigest()
+
+def verify_ledger(c):
+    """Walk the receipt chain in seq order, recompute each link.
+    Tamper with any field and the chain breaks at that link."""
+    rows = c.execute("SELECT * FROM receipts ORDER BY ledger_seq").fetchall()
+    prev, last_seq = GENESIS, 0
+    for row in rows:
+        expect = receipt_hash(row["ledger_seq"], row["proposal_id"], row["request_id"],
+                              row["client_sig"], row["from_version"], row["new_version"],
+                              row["result"], prev)
+        if row["receipt_hash"] != expect or row["prev_hash"] != prev:
+            return {"ok": False, "broken_at_seq": row["ledger_seq"], "root": None}
+        prev, last_seq = row["receipt_hash"], row["ledger_seq"]
+    return {"ok": True, "broken_at_seq": None, "receipts": last_seq, "root": prev or GENESIS}
 
 def version(c):
     return c.execute("SELECT v FROM kv WHERE k='state_version'").fetchone()[0]
@@ -108,8 +132,16 @@ def approve(body):
     c.execute("UPDATE kv SET v=? WHERE k='state_version'", (new_v,))
     c.execute("UPDATE proposals SET status='executed' WHERE proposal_id=?", (pid,))
     result = {"task_id": p["task_id"], "action": p["action"], "applied": sets}
-    c.execute("INSERT INTO receipts (proposal_id, request_id, new_version, result, executed_at)"
-              " VALUES (?,?,?,?,?)", (pid, rid, new_v, json.dumps(result), time.time()))
+    result_json = json.dumps(result)
+    prev = c.execute("SELECT receipt_hash FROM receipts ORDER BY ledger_seq DESC LIMIT 1").fetchone()
+    prev = prev["receipt_hash"] if prev else GENESIS
+    seq = (c.execute("SELECT IFNULL(MAX(ledger_seq),0)+1 FROM receipts").fetchone()[0])
+    rhash = receipt_hash(seq, pid, rid, body["client_signature"], cur, new_v, result_json, prev)
+    c.execute("INSERT INTO receipts (ledger_seq, proposal_id, request_id, client_sig,"
+              " from_version, new_version, result, executed_at, prev_hash, receipt_hash)"
+              " VALUES (?,?,?,?,?,?,?,?,?,?)",
+              (seq, pid, rid, body["client_signature"], cur, new_v, result_json,
+               time.time(), prev, rhash))
     receipt = dict(c.execute("SELECT * FROM receipts WHERE request_id=?", (rid,)).fetchone())
     c.execute("COMMIT"); c.close()
     return 200, {"receipt": receipt, "idempotent": False}
@@ -125,6 +157,11 @@ def seed(body):
     out = {"state_version": version(c)}
     c.execute("COMMIT"); c.close()
     return 200, out
+
+def verify():
+    c = db()
+    out = verify_ledger(c)
+    c.close(); return 200, out
 
 def state():
     c = db()
@@ -153,6 +190,7 @@ class H(BaseHTTPRequestHandler):
         self._send(*r)
     def do_GET(self):
         if self.path == "/state": return self._send(*state())
+        if self.path == "/verify": return self._send(*verify())
         self._send(404, {"error": "not found"})
 
 if __name__ == "__main__":
