@@ -169,7 +169,11 @@ def state():
     ledger = [dict(r) for r in c.execute(
         "SELECT ledger_seq, proposal_id, new_version, result, executed_at FROM receipts"
         " ORDER BY ledger_seq")]
-    out = {"state_version": version(c), "fleet_tasks": tasks, "receipts": ledger}
+    proposals = [dict(r) for r in c.execute(
+        "SELECT proposal_id, task_id, action, base_version, diff_hash, status,"
+        " created_at FROM proposals ORDER BY created_at")]
+    out = {"state_version": version(c), "fleet_tasks": tasks,
+           "proposals": proposals, "receipts": ledger}
     c.close(); return 200, out
 
 class H(BaseHTTPRequestHandler):
